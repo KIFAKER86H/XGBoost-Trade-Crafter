@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Model Builder & Exporter</title>
+  <link rel="stylesheet" href="/src/styles.css">
+  <style>
+    /* เพิ่ม style เล็กน้อยสำหรับ checkbox */
+    .checkbox-group { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; font-size: 0.9rem;}
+    .checkbox-group input { width: auto; margin: 0; cursor: pointer; }
+    .error-text { color: #ff5252; font-weight: bold; }
+    .warning-text { color: #ffeb3b; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+      <h1 style="margin: 0;">AI Trade Model Builder</h1>
+      <button id="btn-history" class="btn-secondary" style="padding: 8px 15px; font-size: 0.9rem; flex: none; width: auto;">📜 View History</button>
+    </div>
+
+    <div class="section">
+      <h2>📊 1. Data Source (MT5)</h2>
+      <div class="grid-3">
+        <div class="form-group">
+          <label>Symbol (คู่เงิน)</label>
+          <input type="text" id="symbol" value="XAUUSDm" placeholder="e.g., EURUSD, BTCUSD">
+        </div>
+        <div class="form-group">
+          <label>Timeframe</label>
+          <select id="timeframe">
+            <option value="M1">M1 (1 Minute)</option>
+            <option value="M5">M5 (5 Minutes)</option>
+            <option value="15">M15 (15 Minutes)</option>
+            <option value="60">H1 (1 Hour)</option>
+            <option value="M30">M30 (30 Minutes)</option>
+            <option value="H1">H1 (1 Hour)</option>
+            <option value="H4">H4 (4 Hours)</option>
+            <option value="D1">D1 (1 Day)</option>
+            <option value="W1">W1 (1 Week)</option>
+            <option value="MN1">MN1 (1 Month)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <div class="checkbox-group" style="margin-top: 25px;">
+            <input type="checkbox" id="use_custom_history">
+            <label for="use_custom_history" style="margin-bottom:0;">Custom History Date</label>
+          </div>
+        </div>
+      </div>
+      
+      <div id="custom_date_range" class="grid-2" style="display: none; margin-top: 15px; background: #1e1e2f; padding: 15px; border-radius: 6px; border: 1px dashed var(--border);">
+        <div class="form-group">
+          <label>Start Date (เวลาเริ่มต้น)</label>
+          <input type="date" id="start_date">
+        </div>
+        <div class="form-group">
+          <label>End Date (เวลาสุดท้าย)</label>
+          <input type="date" id="end_date">
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>⚙️ 2. Indicator & Labeling Config</h2>
+      <div class="grid-3">
+        <div class="form-group"><label>ATR Period</label><input type="text" id="atr_period" value="48"></div>
+        <div class="form-group"><label>RSI Period</label><input type="text" id="rsi_period" value="28"></div>
+        <div class="form-group"><label>BB Window</label><input type="text" id="bb_window" value="50"></div>
+        <div class="form-group"><label>ROC Period</label><input type="text" id="roc_period" value="168"></div>
+        <div class="form-group"><label>CCI Period</label><input type="text" id="cci_period" value="72"></div>
+        <div class="form-group"><label>MACD (F, S, Sig)</label><input type="text" id="macd_params" value="28,96,150"></div>
+      </div>
+      <div class="grid-2" style="margin-top: 15px;">
+        <div class="form-group"><label>EMA Spans</label><input type="text" id="ema_spans" value="20,50,400"></div>
+        <div class="form-group"><label>SMA Windows</label><input type="text" id="sma_windows" value="20,50,400"></div>
+      </div>
+      <hr style="border-color: var(--border); margin: 15px 0;">
+      <div class="grid-2">
+        <div class="form-group">
+          <label>Future EMA Lookahead (แท่งอนาคตสำหรับ Label)</label>
+          <input type="number" id="future_ema_bars" value="24" min="1" max="100">
+        </div>
+      </div>
+      <hr style="border-color: var(--border); margin: 15px 0;">
+      <h3 style="margin-top: 0; font-size: 1rem; color: #aaa;">📊 Data Split (Train / Val / Test)</h3>
+      <div class="grid-3">
+        <div class="form-group">
+          <label>Train Size (%)</label>
+          <input type="number" id="train_size" value="70" min="10" max="90">
+        </div>
+        <div class="form-group">
+          <label>Validation Size (%)</label>
+          <input type="number" id="val_size" value="15" min="5" max="50">
+        </div>
+        <div class="form-group">
+          <label>Test Size (%)</label>
+          <input type="number" id="test_size" value="15" disabled style="background: #333; color: #888;" title="Auto-calculated (100 - Train - Val)">
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>⏳ 3. Lag Configuration</h2>
+      <div class="grid-2">
+        <div class="form-group">
+          <label>Number of Lags</label>
+          <input type="number" id="num_lags" value="5" min="0" max="20">
+        </div>
+        <div class="form-group">
+          <label>Lag Stride (Step)</label>
+          <input type="number" id="lag_stride" value="1" min="1" max="10">
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>🎯 4. Trade Strategy (Export Setting)</h2>
+      <div class="grid-2">
+        <div class="form-group">
+          <label>ATR Stop Loss Multiplier</label>
+          <input type="number" id="sl_multiplier" value="1.5" step="0.1">
+        </div>
+        <div class="form-group">
+          <label>ATR Take Profit Multiplier</label>
+          <input type="number" id="tp_multiplier" value="2.0" step="0.1">
+        </div>
+      </div>
+
+      <div class="btn-group">
+        <button class="btn-primary" id="btn-train">▶️ Start Training</button>
+        <button class="btn-secondary" id="btn-export" disabled>💾 Export Model & Code</button>
+      </div>
+      <div id="progress-container" style="display: none; margin-top: 20px;">
+        <div style="display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 0.9rem; color: #aaa;">
+          <span id="progress-text">Initializing...</span>
+          <span id="progress-percent" style="color: var(--primary); font-weight: bold;">0%</span>
+        </div>
+        <div class="progress-bar-bg">
+          <div id="progress-fill" class="progress-bar-fill"></div>
+        </div>
+      </div>
+    </div>
+    
+    <div id="console-output">
+      System Ready. Waiting for configuration...<br>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+
+  <div id="history-modal" class="modal">
+    <div class="modal-content">
+      <span class="close-btn" id="close-history">&times;</span>
+      <h2 style="margin-top:0; color:var(--primary);">📊 Training History</h2>
+      <div style="overflow-x: auto; max-height: 400px; overflow-y: auto;">
+        <table id="history-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Date & Time</th>
+              <th>Symbol</th>
+              <th>TF</th>
+              <th>Data Rows</th>
+              <th>Accuracy</th>
+              <th>F1 Score</th>
+            </tr>
+          </thead>
+          <tbody id="history-tbody">
+            </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

@@ -1,3 +1,6 @@
+# =========================
+# Node / Frontend
+# =========================
 # Logs
 logs
 *.log
@@ -12,7 +15,33 @@ dist
 dist-ssr
 *.local
 
+# =========================
+# Tauri / Rust
+# =========================
+src-tauri/target/
+
+# =========================
+# Python / FastAPI Backend
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+venv/
+env/
+.pytest_cache/
+
+# =========================
+# AI Models & App Database (ซ่อนผลลัพธ์จากคนอื่น)
+# =========================
+engine/models/*.pkl
+engine/scalers/*.pkl
+engine/export/*.py
+engine/app_database.db
+
+# =========================
 # Editor directories and files
+# =========================
 .vscode/*
 !.vscode/extensions.json
 .idea

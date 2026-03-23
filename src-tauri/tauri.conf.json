@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ai-model-builder",
+  "productName": "XGBoost-Trade-Crafter",
   "version": "0.1.0",
   "identifier": "com.freshy-friezy.ai-model-builder",
   "build": {
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
         {
-          "title": "AI Model Builder",
+          "title": "XGBoost Trade Crafter",
           "width": 900,        
           "height": 950,       
           "resizable": true,

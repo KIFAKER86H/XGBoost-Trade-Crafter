@@ -19,7 +19,7 @@ from ai_core import (
 
 import os
 
-app = FastAPI(title="AI Model Builder API")
+app = FastAPI(title="XGBoost Trade Crafter API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 init_db()
 class TrainConfig(BaseModel):

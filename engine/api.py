@@ -68,6 +68,7 @@ def background_training_job(task_id: str, cfg: dict):
 
         update_progress(10, "Step 1: Fetching data from MT5...")
         df_raw, warning = fetch_mt5_data(symbol, timeframe, cfg['data']['history'])
+        api_log(f"Fetch [{symbol}, {timeframe}] | FINISHED!", "SUCCESS")
         
         update_progress(30, "Step 2: Engineering Features & Lags...")
         lags = cfg['lags']['number']
@@ -81,10 +82,22 @@ def background_training_job(task_id: str, cfg: dict):
         update_progress(65, "Step 4: Preparing Train/Test splits...")
         train_size = cfg['split']['train']
         val_size = cfg['split']['val']
-        df_model = df_labeled.drop(columns=[col for col in ['EMA24', 'EMA24_Future', 'EMA48', 'EMA48_Future'] if col in df_labeled.columns], errors='ignore')
+        
+        # 🌟 ทำให้การลบคอลัมน์เป็นแบบ Dynamic ตามค่าที่ผู้ใช้ตั้ง
+        future_col = f"EMA{future_bars}"
+        future_col_f = f"EMA{future_bars}_Future"
+        cols_to_drop = [future_col, future_col_f, 'EMA24', 'EMA24_Future', 'EMA48', 'EMA48_Future']
+        
+        df_model = df_labeled.drop(columns=[col for col in cols_to_drop if col in df_labeled.columns], errors='ignore')
+        
+        # 🌟 [ส่วนที่ต้องเพิ่มกลับมา] เรียกใช้ฟังก์ชันเพื่อสร้าง X_train, y_train และ scaler
         X_train, X_val, X_test, y_train, y_val, y_test, scaler = prepare_for_training(
             df_model, target_col='Label', train_size=train_size, val_size=val_size
         )
+        
+        update_progress(80, "Step 5: Training XGBoost Model (GridSearch may take a while)...")
+        model_num = 999 
+        model, metrics = train_xgboost(X_train, y_train, X_val, y_val, model_num=model_num)
         
         update_progress(80, "Step 5: Training XGBoost Model (GridSearch may take a while)...")
         model_num = 999 

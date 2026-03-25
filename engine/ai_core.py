@@ -240,7 +240,7 @@ def save_model_artifacts(model, scaler, model_num):
 # SECTION 4: TRADE CODE GENERATOR
 # ==========================================
 def generate_trade_script(config: dict, model_num: int):
-    """สร้างไฟล์ Tradecode.py (ปิดไวที่ 50% แต่เปิดใหม่ต้องมั่นใจ > 60%)"""
+    """สร้างไฟล์ Tradecode.py แบบ Clean Text (ไม่มี Emoji ป้องกัน .bat แครช)"""
     symbol = config['data']['symbol']
     tf = config['data']['timeframe']
     sl_mult = config['strategy']['sl_mult']
@@ -266,10 +266,12 @@ MODEL_NUM = {model_num}
 SL_MULTIPLIER = {sl_mult}
 TP_MULTIPLIER = {tp_mult}
 
+# Money Management
+EQUITY_PER_LOT = 300 
+
 MODEL_PATH = "models/XGBOOST_Model_{model_num}.pkl"
 SCALER_PATH = "scalers/XGBOOST_scaler_{model_num}.pkl"
 HISTORY_BARS = 1000 
-LOT_SIZE = 0.01     
 
 INDICATOR_CONFIG = {indicators_cfg}
 LAGS_CONFIG = {lags_cfg}
@@ -344,11 +346,31 @@ def add_lags_custom(df: pd.DataFrame, columns: list, lags: int = 3, stride: int 
 # ==============================
 # 2) MT5 ORDER EXECUTION
 # ==============================
+def calculate_dynamic_lot(symbol, equity_per_lot=EQUITY_PER_LOT, lot_step_size=0.01):
+    account_info = mt5.account_info()
+    if account_info is None:
+        return 0.01
+    equity = account_info.equity
+    calculated_lot = (equity / equity_per_lot) * lot_step_size
+
+    symbol_info = mt5.symbol_info(symbol)
+    if symbol_info is None:
+        return 0.01
+
+    min_lot = symbol_info.volume_min
+    max_lot = symbol_info.volume_max
+    lot_step = symbol_info.volume_step
+
+    final_lot = round(calculated_lot / lot_step) * lot_step
+    final_lot = max(min_lot, min(final_lot, max_lot))
+    return round(final_lot, 2)
+
 def open_trade(action, price, sl, tp):
+    dynamic_lot = calculate_dynamic_lot(SYMBOL)
     request = {{
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": SYMBOL,
-        "volume": LOT_SIZE,
+        "volume": dynamic_lot,
         "type": action,
         "price": price,
         "sl": sl,
@@ -361,9 +383,9 @@ def open_trade(action, price, sl, tp):
     }}
     result = mt5.order_send(request)
     if result.retcode != mt5.TRADE_RETCODE_DONE:
-        print(f"❌ Order Send Failed: {{result.comment}}")
+        print(f"[ERROR] Order Send Failed: {{result.comment}}")
     else:
-        print(f"✅ Trade Opened Successfully! Ticket: {{result.order}}")
+        print(f"[SUCCESS] Trade Opened! Ticket: {{result.order}} | Lot: {{dynamic_lot}}")
 
 def close_position(position):
     tick = mt5.symbol_info_tick(position.symbol)
@@ -385,10 +407,10 @@ def close_position(position):
     }}
     result = mt5.order_send(request)
     if result.retcode == mt5.TRADE_RETCODE_DONE:
-        print(f"🗑️ Position {{position.ticket}} Closed Successfully.")
+        print(f"[CLOSED] Position {{position.ticket}} Closed Successfully.")
         return True
     else:
-        print(f"❌ Failed to close position: {{result.comment}}")
+        print(f"[ERROR] Failed to close position: {{result.comment}}")
         return False
 
 # ==============================
@@ -396,21 +418,19 @@ def close_position(position):
 # ==============================
 def main():
     if not mt5.initialize():
-        print("❌ MT5 Initialize failed")
+        print("[ERROR] MT5 Initialize failed")
         return
         
-    print(f"🚀 Running Trade Bot for {{SYMBOL}}...")
+    print(f"[START] Running Trade Bot for {{SYMBOL}}...")
     
-    # 3.1) โหลดโมเดล
     try:
         model = joblib.load(MODEL_PATH)
         scaler = joblib.load(SCALER_PATH)
     except Exception as e:
-        print(f"❌ Error loading model: {{e}}")
+        print(f"[ERROR] Error loading model: {{e}}")
         mt5.shutdown()
         return
 
-    # 3.2) ดึงข้อมูลและสร้าง Feature
     rates = mt5.copy_rates_from_pos(SYMBOL, TIMEFRAME, 0, HISTORY_BARS)
     if rates is None or len(rates) == 0:
         mt5.shutdown()
@@ -429,7 +449,6 @@ def main():
         mt5.shutdown()
         return
 
-    # 3.3) เตรียมข้อมูลแท่งล่าสุดและทำนาย
     last_bar = df_feat.iloc[-1:]
     current_tick = mt5.symbol_info_tick(SYMBOL)
     current_atr = last_bar[atr_col].values[0]
@@ -438,48 +457,49 @@ def main():
     X_scaled = scaler.transform(X_live)
 
     prediction = model.predict(X_scaled)[0]
-    prob = model.predict_proba(X_scaled)[0][1] # ความน่าจะเป็นฝั่งขึ้น (1)
+    prob = model.predict_proba(X_scaled)[0][1]
 
-    print(f"📊 ML Prediction: {{'UPTREND (BUY)' if prediction == 1 else 'DOWNTREND (SELL)'}} | Confidence: {{prob*100:.2f}}%")
+    print(f"[PREDICT] ML Prediction: {{'UPTREND (BUY)' if prediction == 1 else 'DOWNTREND (SELL)'}} | Confidence: {{prob*100:.2f}}%")
 
-    # 3.4) ตรวจสอบออเดอร์ปัจจุบันและจัดการ Position (ลอจิกปิดไวที่ 50%)
     positions = mt5.positions_get(symbol=SYMBOL)
     has_buy = False
     has_sell = False
 
     if positions:
         for pos in positions:
+            if pos.magic != MAGIC_NUMBER:
+                continue
+
             if pos.type == mt5.ORDER_TYPE_BUY:
-                if prediction == 0: # โมเดลบอกลง (ความน่าจะเป็นลดต่ำกว่า 50%) -> ปิดทันที
-                    print("🚨 Reversal Signal: Closing existing BUY position...")
+                if prob < 0.55: 
+                    print(f"[ALERT] Confidence dropped to {{prob*100:.2f}}%: Closing existing BUY position...")
                     close_position(pos)
                 else:
                     has_buy = True 
             elif pos.type == mt5.ORDER_TYPE_SELL:
-                if prediction == 1: # โมเดลบอกขึ้น (ความน่าจะเป็นเกิน 50%) -> ปิดทันที
-                    print("🚨 Reversal Signal: Closing existing SELL position...")
+                if (1 - prob) < 0.55: 
+                    print(f"[ALERT] Confidence dropped to {{(1-prob)*100:.2f}}%: Closing existing SELL position...")
                     close_position(pos)
                 else:
                     has_sell = True 
 
-    # 3.5) เปิดออเดอร์ใหม่ถ้าหน้าตักว่าง (ต้องมั่นใจ > 60%)
     if not has_buy and not has_sell:
         if prediction == 1 and prob > 0.60:
             sl = current_tick.ask - (current_atr * SL_MULTIPLIER)
             tp = current_tick.ask + (current_atr * TP_MULTIPLIER)
-            print(f"📈 Executing BUY | High Confidence: {{prob*100:.2f}}% | SL: {{sl:.3f}}, TP: {{tp:.3f}}")
+            print(f"[BUY] Signal: STRONG BUY | High Confidence: {{prob*100:.2f}}%")
             open_trade(mt5.ORDER_TYPE_BUY, current_tick.ask, sl, tp)
             
-        elif prediction == 0 and prob < 0.40: # prob ฝั่งขึ้นต่ำกว่า 0.4 แปลว่ามั่นใจฝั่งลงมากกว่า 60%
+        elif prediction == 0 and prob < 0.40: 
             sl = current_tick.bid + (current_atr * SL_MULTIPLIER)
             tp = current_tick.bid - (current_atr * TP_MULTIPLIER)
-            print(f"📉 Executing SELL | High Confidence: {{(1-prob)*100:.2f}}% | SL: {{sl:.3f}}, TP: {{tp:.3f}}")
+            print(f"[SELL] Signal: STRONG SELL | High Confidence: {{(1-prob)*100:.2f}}%")
             open_trade(mt5.ORDER_TYPE_SELL, current_tick.bid, sl, tp)
             
         else:
-            print("⚖️ Waiting... Confidence is in the neutral zone (between 40% - 60%).")
+            print("[HOLD] Waiting... Confidence is in the neutral zone (between 40% - 60%).")
     else:
-        print("⏳ Already holding the correct position. Waiting for next signal.")
+        print("[WAIT] Already holding the correct position. Waiting for next signal.")
 
     mt5.shutdown()
 

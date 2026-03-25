@@ -9,22 +9,24 @@ import talib
 # 0) GLOBAL CONFIG
 # ==============================
 SYMBOL = "XAUUSDm"
-TIMEFRAME = mt5.TIMEFRAME_15
-MAGIC_NUMBER = 151515
+TIMEFRAME = mt5.TIMEFRAME_M15
+MAGIC_NUMBER = 150369
 MODEL_NUM = 999
 SL_MULTIPLIER = 1.5
 TP_MULTIPLIER = 2
 
+# Money Management
+EQUITY_PER_LOT = 300 
+
 MODEL_PATH = "models/XGBOOST_Model_999.pkl"
 SCALER_PATH = "scalers/XGBOOST_scaler_999.pkl"
-HISTORY_BARS = 1000 # ดึงย้อนหลังเผื่อคำนวณ Indicator (เช่น EMA400)
-LOT_SIZE = 0.01     # ⚠️ คุณสามารถเปลี่ยน Lot Size ตรงนี้ได้
+HISTORY_BARS = 1000 
 
-INDICATOR_CONFIG = {'atr': 48, 'rsi': 28, 'bb': 50, 'roc': 168, 'cci': 72, 'macd': [28, 96, 150], 'ema': [10, 25, 200], 'sma': [10, 25, 200]}
-LAGS_CONFIG = {'number': 5, 'stride': 1}
+INDICATOR_CONFIG = {'atr': 24, 'rsi': 7, 'bb': 48, 'roc': 48, 'cci': 72, 'macd': [14, 48, 75], 'ema': [7, 21, 160], 'sma': [10, 25, 200]}
+LAGS_CONFIG = {'number': 6, 'stride': 2}
 
 # ==============================
-# 1) FEATURE ENGINEERING (จำลองกระบวนการเดียวกับตอน Train เป๊ะๆ)
+# 1) FEATURE ENGINEERING
 # ==============================
 def prepare_features(df: pd.DataFrame, config: dict, lag_periods: int) -> pd.DataFrame:
     out = df.copy()
@@ -93,58 +95,99 @@ def add_lags_custom(df: pd.DataFrame, columns: list, lags: int = 3, stride: int 
 # ==============================
 # 2) MT5 ORDER EXECUTION
 # ==============================
+def calculate_dynamic_lot(symbol, equity_per_lot=EQUITY_PER_LOT, lot_step_size=0.01):
+    account_info = mt5.account_info()
+    if account_info is None:
+        return 0.01
+    equity = account_info.equity
+    calculated_lot = (equity / equity_per_lot) * lot_step_size
+
+    symbol_info = mt5.symbol_info(symbol)
+    if symbol_info is None:
+        return 0.01
+
+    min_lot = symbol_info.volume_min
+    max_lot = symbol_info.volume_max
+    lot_step = symbol_info.volume_step
+
+    final_lot = round(calculated_lot / lot_step) * lot_step
+    final_lot = max(min_lot, min(final_lot, max_lot))
+    return round(final_lot, 2)
+
 def open_trade(action, price, sl, tp):
+    dynamic_lot = calculate_dynamic_lot(SYMBOL)
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": SYMBOL,
-        "volume": LOT_SIZE,
+        "volume": dynamic_lot,
         "type": action,
         "price": price,
         "sl": sl,
         "tp": tp,
         "deviation": 20,
         "magic": MAGIC_NUMBER,
-        "comment": "XGBoost Bot",
+        "comment": "XGForge AI",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     }
     result = mt5.order_send(request)
     if result.retcode != mt5.TRADE_RETCODE_DONE:
-        print(f"❌ Order Send Failed: {result.comment}")
+        print(f"[ERROR] Order Send Failed: {result.comment}")
     else:
-        print(f"✅ Trade Opened Successfully! Ticket: {result.order}")
+        print(f"[SUCCESS] Trade Opened! Ticket: {result.order} | Lot: {dynamic_lot}")
+
+def close_position(position):
+    tick = mt5.symbol_info_tick(position.symbol)
+    close_type = mt5.ORDER_TYPE_SELL if position.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+    close_price = tick.bid if position.type == mt5.ORDER_TYPE_BUY else tick.ask
+
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "position": position.ticket,
+        "symbol": position.symbol,
+        "volume": position.volume,
+        "type": close_type,
+        "price": close_price,
+        "deviation": 20,
+        "magic": MAGIC_NUMBER,
+        "comment": "AI Reversal Close",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    }
+    result = mt5.order_send(request)
+    if result.retcode == mt5.TRADE_RETCODE_DONE:
+        print(f"[CLOSED] Position {position.ticket} Closed Successfully.")
+        return True
+    else:
+        print(f"[ERROR] Failed to close position: {result.comment}")
+        return False
 
 # ==============================
 # 3) MAIN BOT LOGIC
 # ==============================
 def main():
     if not mt5.initialize():
-        print("❌ MT5 Initialize failed")
+        print("[ERROR] MT5 Initialize failed")
         return
         
-    print(f"🚀 Running Trade Bot for {SYMBOL}...")
+    print(f"[START] Running Trade Bot for {SYMBOL}...")
     
-    # 3.1) โหลดโมเดล
     try:
         model = joblib.load(MODEL_PATH)
         scaler = joblib.load(SCALER_PATH)
-        print("✅ Model & Scaler loaded successfully.")
     except Exception as e:
-        print(f"❌ Error loading model: {e}")
+        print(f"[ERROR] Error loading model: {e}")
         mt5.shutdown()
         return
 
-    # 3.2) ดึงข้อมูลล่าสุด
     rates = mt5.copy_rates_from_pos(SYMBOL, TIMEFRAME, 0, HISTORY_BARS)
     if rates is None or len(rates) == 0:
-        print("❌ Failed to fetch data.")
         mt5.shutdown()
         return
         
     df = pd.DataFrame(rates)
     df['time'] = pd.to_datetime(df['time'], unit='s')
     
-    # 3.3) สร้าง Feature (กระบวนการเดียวกับตอน Train)
     df_feat = prepare_features(df, INDICATOR_CONFIG, LAGS_CONFIG['number'])
     atr_col = f"ATR_{INDICATOR_CONFIG.get('atr', 48)}"
     if atr_col in df_feat.columns:
@@ -152,45 +195,60 @@ def main():
     
     df_feat.dropna(inplace=True)
     if len(df_feat) == 0:
-        print("❌ Not enough data to calculate features.")
         mt5.shutdown()
         return
 
-    # 3.4) ดึงข้อมูลแท่งล่าสุดเตรียมเข้าโมเดล
     last_bar = df_feat.iloc[-1:]
-    current_price = mt5.symbol_info_tick(SYMBOL).ask
+    current_tick = mt5.symbol_info_tick(SYMBOL)
     current_atr = last_bar[atr_col].values[0]
 
     X_live = last_bar.drop(columns=['time'], errors='ignore')
-    
-    try:
-        X_scaled = scaler.transform(X_live)
-    except Exception as e:
-        print(f"❌ Feature Mismatch Error: {e}")
-        mt5.shutdown()
-        return
+    X_scaled = scaler.transform(X_live)
 
-    # 3.5) ทำนายผล!
     prediction = model.predict(X_scaled)[0]
-    prob = model.predict_proba(X_scaled)[0][1] # หาความน่าจะเป็นที่จะขึ้น (Uptrend)
+    prob = model.predict_proba(X_scaled)[0][1]
 
-    print(f"📊 Prediction: {'UPTREND (1)' if prediction == 1 else 'DOWNTREND (0)'} | Confidence: {prob*100:.2f}%")
+    print(f"[PREDICT] ML Prediction: {'UPTREND (BUY)' if prediction == 1 else 'DOWNTREND (SELL)'} | Confidence: {prob*100:.2f}%")
 
-    # 3.6) ระบบจัดการออเดอร์ (ง่ายๆ คือเปิดทีละ 1 ไม้)
     positions = mt5.positions_get(symbol=SYMBOL)
-    if positions is None or len(positions) > 0:
-        print("⏳ Already have an open position. Waiting for it to close...")
-        mt5.shutdown()
-        return
+    has_buy = False
+    has_sell = False
 
-    # ลอจิกเปิดออเดอร์ (ตัวอย่าง: ถ้าคาดว่าจะขึ้น และมั่นใจ > 60% ให้เปิด BUY)
-    if prediction == 1 and prob > 0.60:
-        sl = current_price - (current_atr * SL_MULTIPLIER)
-        tp = current_price + (current_atr * TP_MULTIPLIER)
-        print(f"📈 Executing BUY | Price: {current_price}, SL: {sl:.3f}, TP: {tp:.3f}")
-        open_trade(mt5.ORDER_TYPE_BUY, current_price, sl, tp)
+    if positions:
+        for pos in positions:
+            if pos.magic != MAGIC_NUMBER:
+                continue
+
+            if pos.type == mt5.ORDER_TYPE_BUY:
+                if prob < 0.55: 
+                    print(f"[ALERT] Confidence dropped to {prob*100:.2f}%: Closing existing BUY position...")
+                    close_position(pos)
+                else:
+                    has_buy = True 
+            elif pos.type == mt5.ORDER_TYPE_SELL:
+                if (1 - prob) < 0.55: 
+                    print(f"[ALERT] Confidence dropped to {(1-prob)*100:.2f}%: Closing existing SELL position...")
+                    close_position(pos)
+                else:
+                    has_sell = True 
+
+    if not has_buy and not has_sell:
+        if prediction == 1 and prob > 0.60:
+            sl = current_tick.ask - (current_atr * SL_MULTIPLIER)
+            tp = current_tick.ask + (current_atr * TP_MULTIPLIER)
+            print(f"[BUY] Signal: STRONG BUY | High Confidence: {prob*100:.2f}%")
+            open_trade(mt5.ORDER_TYPE_BUY, current_tick.ask, sl, tp)
+            
+        elif prediction == 0 and prob < 0.40: 
+            sl = current_tick.bid + (current_atr * SL_MULTIPLIER)
+            tp = current_tick.bid - (current_atr * TP_MULTIPLIER)
+            print(f"[SELL] Signal: STRONG SELL | High Confidence: {(1-prob)*100:.2f}%")
+            open_trade(mt5.ORDER_TYPE_SELL, current_tick.bid, sl, tp)
+            
+        else:
+            print("[HOLD] Waiting... Confidence is in the neutral zone (between 40% - 60%).")
     else:
-        print("📉 Signal is neutral/downtrend or confidence too low. No trade taken.")
+        print("[WAIT] Already holding the correct position. Waiting for next signal.")
 
     mt5.shutdown()
 
